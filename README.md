@@ -55,34 +55,48 @@ infisical init
 ## Usage
 
 ```
-octl pull [dev|prod|all]       Pull secrets from Infisical -> .env files
-octl push [dev|prod|all]       Push .env files -> Infisical (with deletion diff)
-octl clean-branches            Delete all local branches except main & production
-octl --help                    Show help
-octl --version                 Show version
+octl syncenv pull [dev|prod|all]   Pull secrets from Infisical -> .env files
+octl syncenv push [dev|prod|all]   Push .env files -> Infisical (with deletion diff)
+octl clean-branches                Delete all local branches except main & production
+octl --help                        Show help
+octl --version                     Show version
 ```
 
-### Pull secrets
+All subcommands are also available as standalone commands:
+
+```
+syncenv pull [dev|prod|all]
+syncenv push [dev|prod|all]
+clean-branches
+```
+
+### syncenv pull
 
 Download secrets from Infisical and save them to local `.env` files.
 
 ```bash
-octl pull dev          # -> .env.development
-octl pull prod         # -> .env.production
-octl pull              # -> both (default: all)
+octl syncenv pull dev          # -> .env.development
+octl syncenv pull prod         # -> .env.production
+octl syncenv pull              # -> both (default: all)
+
+# or standalone:
+syncenv pull dev
 ```
 
-### Push secrets
+### syncenv push
 
 Upload local `.env` files to Infisical. Detects removed keys and prompts before deleting them remotely.
 
 ```bash
-octl push dev          # .env.development -> Infisical
-octl push prod         # .env.production  -> Infisical
-octl push              # both (default: all)
+octl syncenv push dev          # .env.development -> Infisical
+octl syncenv push prod         # .env.production  -> Infisical
+octl syncenv push              # both (default: all)
+
+# or standalone:
+syncenv push prod
 ```
 
-### Clean branches
+### clean-branches
 
 Delete all local git branches except `main` and `production`. Prompts for confirmation.
 
@@ -97,5 +111,5 @@ clean-branches
 | Argument | File               | Infisical env |
 | -------- | ------------------ | ------------- |
 | `dev`    | `.env.development` | `dev`         |
-| `prod`   | `.env.production`  | `prod`       |
+| `prod`   | `.env.production`  | `prod`        |
 | `all`    | Both               | Both          |

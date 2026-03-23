@@ -2,12 +2,12 @@
 octl - Octify dev workflow CLI
 
 Usage:
-    octl pull [dev|prod|all]       Pull secrets from Infisical -> .env files
-    octl push [dev|prod|all]       Push .env files -> Infisical (with deletion diff)
-    octl clean-branches            Delete all local branches except main & production
-    octl --help                    Show this help message
-    octl --version                 Show version
-    clean-branches                 (standalone) same as octl clean-branches
+    octl syncenv pull [dev|prod|all]   Pull secrets from Infisical -> .env files
+    octl syncenv push [dev|prod|all]   Push .env files -> Infisical (with deletion diff)
+    octl clean-branches                Delete all local branches except main & production
+    syncenv pull [dev|prod|all]        (standalone) same as octl syncenv pull
+    syncenv push [dev|prod|all]        (standalone) same as octl syncenv push
+    clean-branches                     (standalone) same as octl clean-branches
 """
 
 from __future__ import annotations
@@ -20,9 +20,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-VERSION = "1.1.0"
-
-COMMANDS = ("pull", "push", "clean-branches")
+VERSION = "1.2.0"
 
 
 # -- Helpers -------------------------------------------------------------------
@@ -90,7 +88,7 @@ def prompt_yn(question: str) -> bool:
     return answer in ("y", "yes")
 
 
-# -- Core operations -----------------------------------------------------------
+# -- Syncenv operations --------------------------------------------------------
 
 def pull(env: str, cwd: Path) -> int:
     out_file = env_file(env, cwd)
@@ -217,6 +215,43 @@ def _handle_deletions(env: str, env_f: Path) -> int:
             pass
 
 
+def _run_syncenv(args: list[str]) -> None:
+    """Shared logic for syncenv subcommand (used by both octl syncenv and standalone syncenv)."""
+    if not args or args[0] in ("--help", "-h"):
+        syncenv_usage()
+        sys.exit(0 if args else 1)
+
+    action = args[0]
+
+    if action not in ("pull", "push"):
+        print(f"Error: Unknown syncenv action '{action}'", file=sys.stderr)
+        syncenv_usage()
+        sys.exit(1)
+
+    environment = args[1] if len(args) > 1 else "all"
+
+    if environment in ("--help", "-h"):
+        syncenv_usage()
+        sys.exit(0)
+
+    if environment not in ("dev", "prod", "all"):
+        print(f"Error: Unknown environment '{environment}'", file=sys.stderr)
+        print("Valid environments: dev, prod, all", file=sys.stderr)
+        sys.exit(1)
+
+    check_infisical()
+
+    cwd = Path.cwd()
+    fn = pull if action == "pull" else push
+    envs = ["dev", "prod"] if environment == "all" else [environment]
+
+    rc = 0
+    for env in envs:
+        rc = max(rc, fn(env, cwd))
+
+    sys.exit(rc)
+
+
 # -- Git: clean-branches -------------------------------------------------------
 
 SAFE_BRANCHES = {"main", "production"}
@@ -310,23 +345,31 @@ def _setup_signal() -> None:
     )
 
 
+def syncenv_usage() -> None:
+    print(
+        "Usage:\n"
+        "  syncenv pull [dev|prod|all]   Pull secrets from Infisical -> .env files\n"
+        "  syncenv push [dev|prod|all]   Push .env files -> Infisical (with deletion diff)\n"
+        "\n"
+        "Environments:\n"
+        "  dev       .env.development\n"
+        "  prod      .env.production\n"
+        "  all       Both (default)\n",
+    )
+
+
 def usage() -> None:
     print(
         "octl - Octify dev workflow CLI\n"
         "\n"
         "Usage:\n"
-        "  octl pull [dev|prod|all]       Pull secrets from Infisical -> .env files\n"
-        "  octl push [dev|prod|all]       Push .env files -> Infisical (with deletion diff)\n"
-        "  octl clean-branches            Delete all local branches except main & production\n"
+        "  octl syncenv pull [dev|prod|all]   Pull secrets from Infisical -> .env files\n"
+        "  octl syncenv push [dev|prod|all]   Push .env files -> Infisical (with deletion diff)\n"
+        "  octl clean-branches                Delete all local branches except main & production\n"
         "\n"
         "Options:\n"
         "  --help, -h      Show this help message\n"
         "  --version, -v   Show version\n"
-        "\n"
-        "Environments:\n"
-        "  dev       .env.development\n"
-        "  prod      .env.production\n"
-        "  all       Both (default)\n"
         "\n"
         "Prerequisites:\n"
         "  - Infisical CLI (https://infisical.com/docs/cli/overview)\n"
@@ -335,6 +378,7 @@ def usage() -> None:
 
 
 def main() -> None:
+    """Entry point for `octl` command."""
     _setup_signal()
 
     args = sys.argv[1:]
@@ -349,39 +393,33 @@ def main() -> None:
 
     command = args[0]
 
-    if command == "clean-branches":
+    if command == "syncenv":
+        _run_syncenv(args[1:])
+
+    elif command == "clean-branches":
         sys.exit(clean_branches())
 
-    if command not in ("pull", "push"):
+    else:
         print(f"Error: Unknown command '{command}'", file=sys.stderr)
         usage()
         sys.exit(1)
 
-    environment = args[1] if len(args) > 1 else "all"
 
-    if environment in ("--help", "-h"):
-        usage()
-        sys.exit(0)
+def syncenv_cmd() -> None:
+    """Entry point for standalone `syncenv` command."""
+    _setup_signal()
 
-    if environment not in ("dev", "prod", "all"):
-        print(f"Error: Unknown environment '{environment}'", file=sys.stderr)
-        print("Valid environments: dev, prod, all", file=sys.stderr)
-        sys.exit(1)
+    args = sys.argv[1:]
 
-    check_infisical()
+    if not args and len(sys.argv) > 0:
+        # Check if invoked as `syncenv` with no args
+        pass
 
-    cwd = Path.cwd()
-    fn = pull if command == "pull" else push
-    envs = ["dev", "prod"] if environment == "all" else [environment]
-
-    rc = 0
-    for env in envs:
-        rc = max(rc, fn(env, cwd))
-
-    sys.exit(rc)
+    _run_syncenv(args)
 
 
 def clean_branches_cmd() -> None:
+    """Entry point for standalone `clean-branches` command."""
     _setup_signal()
     sys.exit(clean_branches())
 
