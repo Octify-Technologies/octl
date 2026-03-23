@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=45"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "octl"
+version = "1.1.0"
+description = "Octify dev workflow CLI"
+requires-python = ">=3.8"
+
+[project.scripts]
+octl = "cli:main"
+clean-branches = "cli:clean_branches_cmd"

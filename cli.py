@@ -2,9 +2,12 @@
 octl - Octify dev workflow CLI
 
 Usage:
-    octl pull [dev|prod|all]     Pull secrets from Infisical → .env files
-    octl push [dev|prod|all]     Push .env files → Infisical (with deletion diff)
-    clean-branches               Delete all local branches except main & production
+    octl pull [dev|prod|all]       Pull secrets from Infisical -> .env files
+    octl push [dev|prod|all]       Push .env files -> Infisical (with deletion diff)
+    octl clean-branches            Delete all local branches except main & production
+    octl --help                    Show this help message
+    octl --version                 Show version
+    clean-branches                 (standalone) same as octl clean-branches
 """
 
 from __future__ import annotations
@@ -17,8 +20,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+VERSION = "1.1.0"
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+COMMANDS = ("pull", "push", "clean-branches")
+
+
+# -- Helpers -------------------------------------------------------------------
 
 def warn(msg: str) -> None:
     print(f"Warning: {msg}", file=sys.stderr)
@@ -26,7 +33,11 @@ def warn(msg: str) -> None:
 
 def check_infisical() -> None:
     if shutil.which("infisical") is None:
-        print("Error: Infisical CLI not installed", file=sys.stderr)
+        print("Error: Infisical CLI not installed.", file=sys.stderr)
+        print(
+            "Install it: https://infisical.com/docs/cli/overview",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
@@ -79,11 +90,11 @@ def prompt_yn(question: str) -> bool:
     return answer in ("y", "yes")
 
 
-# ── Core operations ────────────────────────────────────────────────────────────
+# -- Core operations -----------------------------------------------------------
 
 def pull(env: str, cwd: Path) -> int:
     out_file = env_file(env, cwd)
-    print(f"\n── Pulling [{env}] from Infisical...")
+    print(f"\n-- Pulling [{env}] from Infisical...")
 
     tmp = make_tmp(env)
     try:
@@ -96,16 +107,20 @@ def pull(env: str, cwd: Path) -> int:
 
         if result.returncode != 0:
             print(
-                f"Error: Export failed [{env}]. Existing file unchanged.", file=sys.stderr)
+                f"Error: Export failed [{env}]. Existing file unchanged.",
+                file=sys.stderr,
+            )
             return 1
 
         if not tmp.stat().st_size or not has_keylines(tmp):
             print(
-                f"Error: Empty or invalid export [{env}]. Existing file unchanged.", file=sys.stderr)
+                f"Error: Empty or invalid export [{env}]. Existing file unchanged.",
+                file=sys.stderr,
+            )
             return 1
 
         shutil.move(str(tmp), str(out_file))
-        print(f"✓ Saved → {out_file}")
+        print(f"  Saved -> {out_file}")
         return 0
 
     except Exception as e:
@@ -128,13 +143,13 @@ def push(env: str, cwd: Path) -> int:
         print(f"Error: {env_f} is empty; refusing to push.", file=sys.stderr)
         return 1
 
-    print(f"\n── Checking [{env}] for removed keys...")
+    print(f"\n-- Checking [{env}] for removed keys...")
 
     rc = _handle_deletions(env, env_f)
     if rc != 0:
         return rc
 
-    print(f"\n── Pushing secrets → Infisical [{env}]...")
+    print(f"\n-- Pushing secrets -> Infisical [{env}]...")
 
     result = subprocess.run(
         ["infisical", "secrets", "set", f"--file={env_f}", f"--env={env}"],
@@ -145,7 +160,7 @@ def push(env: str, cwd: Path) -> int:
         return 1
 
     count = len(parse_keys(env_f))
-    print(f"✓ Pushed {count} secret(s) → [{env}]")
+    print(f"  Pushed {count} secret(s) -> [{env}]")
     return 0
 
 
@@ -189,7 +204,7 @@ def _handle_deletions(env: str, env_f: Path) -> int:
             print(f"Error: Deletion failed for [{env}]", file=sys.stderr)
             return 1
 
-        print(f"✓ Deleted {len(removed)} key(s) from [{env}]")
+        print(f"  Deleted {len(removed)} key(s) from [{env}]")
         return 0
 
     except Exception as e:
@@ -202,7 +217,7 @@ def _handle_deletions(env: str, env_f: Path) -> int:
             pass
 
 
-# ── Git: clean-branches ────────────────────────────────────────────────────────
+# -- Git: clean-branches -------------------------------------------------------
 
 SAFE_BRANCHES = {"main", "production"}
 
@@ -236,7 +251,7 @@ def clean_branches() -> int:
         print("Error: Could not switch to main or production", file=sys.stderr)
         return 1
 
-    print(f"\n── Switched to [{landed_on}]")
+    print(f"\n-- Switched to [{landed_on}]")
 
     r = _git("branch", capture=True)
     if r.returncode != 0:
@@ -252,7 +267,7 @@ def clean_branches() -> int:
             candidates.append(branch)
 
     if not candidates:
-        print("✓ Nothing to clean — no branches outside main/production.")
+        print("  Nothing to clean -- no branches outside main/production.")
         return 0
 
     print(f"\nBranches to delete ({len(candidates)}):")
@@ -267,23 +282,25 @@ def clean_branches() -> int:
     for branch in candidates:
         r = _git("branch", "-D", branch, capture=True)
         if r.returncode == 0:
-            print(f"  ✓ Deleted {branch}")
+            print(f"  Deleted {branch}")
         else:
             print(
-                f"  ✗ Failed: {branch} — {r.stderr.strip()}", file=sys.stderr)
+                f"  Failed: {branch} -- {r.stderr.strip()}", file=sys.stderr)
             failed.append(branch)
 
     if failed:
-        print(f"\n✗ {len(failed)} branch(es) could not be deleted.",
-              file=sys.stderr)
+        print(
+            f"\n{len(failed)} branch(es) could not be deleted.",
+            file=sys.stderr,
+        )
         return 1
 
     print(
-        f"\n✓ Cleaned {len(candidates)} branch(es). Kept: {', '.join(sorted(SAFE_BRANCHES))}")
+        f"\n  Cleaned {len(candidates)} branch(es). Kept: {', '.join(sorted(SAFE_BRANCHES))}")
     return 0
 
 
-# ── Entry points ───────────────────────────────────────────────────────────────
+# -- Entry points --------------------------------------------------------------
 
 def _setup_signal() -> None:
     signal.signal(
@@ -295,10 +312,25 @@ def _setup_signal() -> None:
 
 def usage() -> None:
     print(
+        "octl - Octify dev workflow CLI\n"
+        "\n"
         "Usage:\n"
-        "  octl pull [dev|prod|all]\n"
-        "  octl push [dev|prod|all]",
-        file=sys.stderr,
+        "  octl pull [dev|prod|all]       Pull secrets from Infisical -> .env files\n"
+        "  octl push [dev|prod|all]       Push .env files -> Infisical (with deletion diff)\n"
+        "  octl clean-branches            Delete all local branches except main & production\n"
+        "\n"
+        "Options:\n"
+        "  --help, -h      Show this help message\n"
+        "  --version, -v   Show version\n"
+        "\n"
+        "Environments:\n"
+        "  dev       .env.development\n"
+        "  prod      .env.production\n"
+        "  all       Both (default)\n"
+        "\n"
+        "Prerequisites:\n"
+        "  - Infisical CLI (https://infisical.com/docs/cli/overview)\n"
+        "  - Run `infisical login` and `infisical init` in your project first\n",
     )
 
 
@@ -307,20 +339,33 @@ def main() -> None:
 
     args = sys.argv[1:]
 
-    if not args:
+    if not args or args[0] in ("--help", "-h", "help"):
         usage()
-        sys.exit(1)
+        sys.exit(0 if args else 1)
+
+    if args[0] in ("--version", "-v"):
+        print(f"octl {VERSION}")
+        sys.exit(0)
 
     command = args[0]
 
+    if command == "clean-branches":
+        sys.exit(clean_branches())
+
     if command not in ("pull", "push"):
+        print(f"Error: Unknown command '{command}'", file=sys.stderr)
         usage()
         sys.exit(1)
 
     environment = args[1] if len(args) > 1 else "all"
 
-    if environment not in ("dev", "prod", "all"):
+    if environment in ("--help", "-h"):
         usage()
+        sys.exit(0)
+
+    if environment not in ("dev", "prod", "all"):
+        print(f"Error: Unknown environment '{environment}'", file=sys.stderr)
+        print("Valid environments: dev, prod, all", file=sys.stderr)
         sys.exit(1)
 
     check_infisical()
