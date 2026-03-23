@@ -1,42 +1,27 @@
-"""
-octl - Octify dev workflow CLI
-
-Usage:
-    octl syncenv pull [dev|prod|all]   Pull secrets from Infisical -> .env files
-    octl syncenv push [dev|prod|all]   Push .env files -> Infisical (with deletion diff)
-    octl clean-branches                Delete all local branches except main & production
-    syncenv pull [dev|prod|all]        (standalone) same as octl syncenv pull
-    syncenv push [dev|prod|all]        (standalone) same as octl syncenv push
-    clean-branches                     (standalone) same as octl clean-branches
-"""
+"""octl - Octify dev workflow CLI"""
 
 from __future__ import annotations
 
-import os
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-VERSION = "1.2.0"
+import click
+import questionary
+
+VERSION = "1.3.0"
 
 
 # -- Helpers -------------------------------------------------------------------
 
-def warn(msg: str) -> None:
-    print(f"Warning: {msg}", file=sys.stderr)
-
-
 def check_infisical() -> None:
     if shutil.which("infisical") is None:
-        print("Error: Infisical CLI not installed.", file=sys.stderr)
-        print(
-            "Install it: https://infisical.com/docs/cli/overview",
-            file=sys.stderr,
+        raise click.ClickException(
+            "Infisical CLI not installed.\n"
+            "Install it: https://infisical.com/docs/cli/overview"
         )
-        sys.exit(1)
 
 
 def env_file(env: str, cwd: Path) -> Path:
@@ -44,9 +29,7 @@ def env_file(env: str, cwd: Path) -> Path:
 
 
 def parse_keys(path: Path) -> list[str]:
-    """Return all non-comment KEY names from an env file.
-    Handles both KEY=value and export KEY=value formats.
-    """
+    """Return all non-comment KEY names from an env file."""
     keys = []
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
@@ -61,195 +44,111 @@ def parse_keys(path: Path) -> list[str]:
     return keys
 
 
-def has_keylines(path: Path) -> bool:
-    return bool(parse_keys(path))
+def run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(args, **kwargs)
 
 
-def make_tmp(suffix: str) -> Path:
-    fd, path = tempfile.mkstemp(prefix=f"octl.{suffix}.")
-    os.close(fd)
-    return Path(path)
-
-
-def prompt_yn(question: str) -> bool:
-    print(f"\n{question} [y/N] ", end="", flush=True)
-    try:
-        if os.path.exists("/dev/tty"):
-            with open("/dev/tty") as tty:
-                answer = tty.readline().strip().lower()
-        else:
-            if not sys.stdin.isatty():
-                print()
-                return False
-            answer = sys.stdin.readline().strip().lower()
-    except (EOFError, KeyboardInterrupt, OSError):
-        print()
-        return False
-    return answer in ("y", "yes")
+def infisical_export(env: str, dest: Path) -> bool:
+    with dest.open("w") as f:
+        r = run(["infisical", "export", f"--env={env}"], stdout=f, stderr=None)
+    return r.returncode == 0 and dest.stat().st_size > 0 and bool(parse_keys(dest))
 
 
 # -- Syncenv operations --------------------------------------------------------
 
 def pull(env: str, cwd: Path) -> int:
     out_file = env_file(env, cwd)
-    print(f"\n-- Pulling [{env}] from Infisical...")
+    click.echo(f"\n-- Pulling [{env}] from Infisical...")
 
-    tmp = make_tmp(env)
+    tmp = Path(tempfile.mktemp(prefix=f"octl.{env}."))
     try:
-        with tmp.open("w") as f:
-            result = subprocess.run(
-                ["infisical", "export", f"--env={env}"],
-                stdout=f,
-                stderr=None,
-            )
-
-        if result.returncode != 0:
-            print(
-                f"Error: Export failed [{env}]. Existing file unchanged.",
-                file=sys.stderr,
-            )
+        if not infisical_export(env, tmp):
+            click.echo(click.style(f"Error: Export failed [{env}]. File unchanged.", fg="red"), err=True)
             return 1
-
-        if not tmp.stat().st_size or not has_keylines(tmp):
-            print(
-                f"Error: Empty or invalid export [{env}]. Existing file unchanged.",
-                file=sys.stderr,
-            )
-            return 1
-
         shutil.move(str(tmp), str(out_file))
-        print(f"  Saved -> {out_file}")
+        click.secho(f"  Saved -> {out_file}", fg="green")
         return 0
-
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+        click.echo(click.style(f"Error: {e}", fg="red"), err=True)
         return 1
     finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
+        tmp.unlink(missing_ok=True)
 
 
 def push(env: str, cwd: Path) -> int:
     env_f = env_file(env, cwd)
 
-    if not env_f.exists():
-        print(f"Error: {env_f} not found", file=sys.stderr)
-        return 1
-    if not env_f.stat().st_size:
-        print(f"Error: {env_f} is empty; refusing to push.", file=sys.stderr)
-        return 1
+    if not env_f.exists() or not env_f.stat().st_size:
+        raise click.ClickException(f"{env_f} not found or empty.")
 
-    print(f"\n-- Checking [{env}] for removed keys...")
-
+    click.echo(f"\n-- Checking [{env}] for removed keys...")
     rc = _handle_deletions(env, env_f)
     if rc != 0:
         return rc
 
-    print(f"\n-- Pushing secrets -> Infisical [{env}]...")
-
-    result = subprocess.run(
-        ["infisical", "secrets", "set", f"--file={env_f}", f"--env={env}"],
-    )
-
-    if result.returncode != 0:
-        print(f"Error: Push failed for [{env}]", file=sys.stderr)
+    click.echo(f"\n-- Pushing secrets -> Infisical [{env}]...")
+    r = run(["infisical", "secrets", "set", f"--file={env_f}", f"--env={env}"])
+    if r.returncode != 0:
+        click.echo(click.style(f"Error: Push failed for [{env}]", fg="red"), err=True)
         return 1
 
-    count = len(parse_keys(env_f))
-    print(f"  Pushed {count} secret(s) -> [{env}]")
+    click.secho(f"  Pushed {len(parse_keys(env_f))} secret(s) -> [{env}]", fg="green")
     return 0
 
 
 def _handle_deletions(env: str, env_f: Path) -> int:
-    tmp = make_tmp(f"{env}_remote")
+    tmp = Path(tempfile.mktemp(prefix=f"octl.{env}_remote."))
     try:
-        with tmp.open("w") as f:
-            result = subprocess.run(
-                ["infisical", "export", f"--env={env}"],
-                stdout=f,
-                stderr=subprocess.PIPE,
-            )
-
-        if result.returncode != 0 or not has_keylines(tmp):
-            warn("Could not fetch remote secrets for diff. Skipping deletion check.")
+        if not infisical_export(env, tmp):
+            click.secho("Warning: Could not fetch remote secrets. Skipping deletion check.", fg="yellow", err=True)
             return 0
 
-        remote_keys = parse_keys(tmp)
-        local_keys = set(parse_keys(env_f))
-        removed = [k for k in remote_keys if k not in local_keys]
-
+        removed = [k for k in parse_keys(tmp) if k not in set(parse_keys(env_f))]
         if not removed:
-            print("No removed keys.")
+            click.echo("No removed keys.")
             return 0
 
-        print(f"\nKeys in Infisical [{env}] missing from {env_f.name}:")
-        for key in removed:
-            print(f"  - {key}")
+        click.echo(f"\nKeys in Infisical [{env}] missing from {env_f.name}:")
+        to_delete = questionary.checkbox(
+            f"Select keys to delete from [{env}]:",
+            choices=[questionary.Choice(k, checked=True) for k in removed],
+        ).ask()
 
-        if not prompt_yn(f"Delete {len(removed)} key(s) from Infisical [{env}]?"):
-            print("Skipped deletion.")
+        if to_delete is None or not to_delete:
+            click.echo("No keys selected for deletion.")
             return 0
 
-        print("Deleting...")
-        result = subprocess.run(
-            ["infisical", "secrets", "delete", *removed, f"--env={env}"],
-            stderr=None,
-        )
+        if not questionary.confirm(f"Delete {len(to_delete)} key(s)?", default=False).ask():
+            click.echo("Skipped deletion.")
+            return 0
 
-        if result.returncode != 0:
-            print(f"Error: Deletion failed for [{env}]", file=sys.stderr)
+        deleted, failed = 0, []
+        for key in to_delete:
+            r = run(["infisical", "secrets", "delete", key, f"--env={env}"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if r.returncode == 0:
+                click.secho(f"  Deleted {key}", fg="green")
+                deleted += 1
+            else:
+                err = r.stderr.decode(errors="replace") if isinstance(r.stderr, bytes) else (r.stderr or "")
+                if "404" in err or "not found" in err.lower():
+                    click.echo(f"  Skipped {key} (already gone)")
+                    deleted += 1
+                else:
+                    click.echo(click.style(f"  Failed to delete {key}", fg="red"), err=True)
+                    failed.append(key)
+
+        if failed:
+            click.echo(click.style(f"\n  {deleted} deleted, {len(failed)} failed: {', '.join(failed)}", fg="red"), err=True)
             return 1
 
-        print(f"  Deleted {len(removed)} key(s) from [{env}]")
+        click.secho(f"  Deleted {deleted} key(s) from [{env}]", fg="green")
         return 0
-
     except Exception as e:
-        warn(f"Deletion diff error: {e}. Continuing with push.")
+        click.secho(f"Warning: Deletion diff error: {e}. Continuing.", fg="yellow", err=True)
         return 0
     finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-
-def _run_syncenv(args: list[str]) -> None:
-    """Shared logic for syncenv subcommand (used by both octl syncenv and standalone syncenv)."""
-    if not args or args[0] in ("--help", "-h"):
-        syncenv_usage()
-        sys.exit(0 if args else 1)
-
-    action = args[0]
-
-    if action not in ("pull", "push"):
-        print(f"Error: Unknown syncenv action '{action}'", file=sys.stderr)
-        syncenv_usage()
-        sys.exit(1)
-
-    environment = args[1] if len(args) > 1 else "all"
-
-    if environment in ("--help", "-h"):
-        syncenv_usage()
-        sys.exit(0)
-
-    if environment not in ("dev", "prod", "all"):
-        print(f"Error: Unknown environment '{environment}'", file=sys.stderr)
-        print("Valid environments: dev, prod, all", file=sys.stderr)
-        sys.exit(1)
-
-    check_infisical()
-
-    cwd = Path.cwd()
-    fn = pull if action == "pull" else push
-    envs = ["dev", "prod"] if environment == "all" else [environment]
-
-    rc = 0
-    for env in envs:
-        rc = max(rc, fn(env, cwd))
-
-    sys.exit(rc)
+        tmp.unlink(missing_ok=True)
 
 
 # -- Git: clean-branches -------------------------------------------------------
@@ -257,171 +156,127 @@ def _run_syncenv(args: list[str]) -> None:
 SAFE_BRANCHES = {"main", "production"}
 
 
-def _git(*args: str, capture: bool = False) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args],
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
-        text=True,
-    )
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], capture_output=True, text=True)
 
 
-def clean_branches() -> int:
+def _clean_branches() -> int:
     if shutil.which("git") is None:
-        print("Error: git not installed", file=sys.stderr)
-        return 1
+        raise click.ClickException("git not installed")
 
-    if _git("rev-parse", "--git-dir", capture=True).returncode != 0:
-        print("Error: Not a git repository", file=sys.stderr)
-        return 1
+    if _git("rev-parse", "--git-dir").returncode != 0:
+        raise click.ClickException("Not a git repository")
 
-    landed_on: str | None = None
+    landed_on = None
     for branch in ("main", "production"):
-        r = _git("checkout", branch, capture=True)
-        if r.returncode == 0:
+        if _git("checkout", branch).returncode == 0:
             landed_on = branch
             break
 
-    if landed_on is None:
-        print("Error: Could not switch to main or production", file=sys.stderr)
-        return 1
+    if not landed_on:
+        raise click.ClickException("Could not switch to main or production")
 
-    print(f"\n-- Switched to [{landed_on}]")
+    click.echo(f"\n-- Switched to [{landed_on}]")
 
-    r = _git("branch", capture=True)
-    if r.returncode != 0:
-        print("Error: Could not list branches", file=sys.stderr)
-        return 1
-
-    candidates = []
-    for line in r.stdout.splitlines():
-        branch = line.strip()
-        if branch.startswith("* "):
-            branch = branch[2:]
-        if branch and branch not in SAFE_BRANCHES:
-            candidates.append(branch)
+    r = _git("branch")
+    candidates = [
+        b[2:].strip() if b.startswith("* ") else b.strip()
+        for b in r.stdout.splitlines()
+        if b.strip() and b.strip().lstrip("* ") not in SAFE_BRANCHES
+    ]
 
     if not candidates:
-        print("  Nothing to clean -- no branches outside main/production.")
+        click.echo("  Nothing to clean -- no branches outside main/production.")
         return 0
 
-    print(f"\nBranches to delete ({len(candidates)}):")
-    for b in candidates:
-        print(f"  - {b}")
+    to_delete = questionary.checkbox(
+        f"Select branches to delete ({len(candidates)} found):",
+        choices=[questionary.Choice(b, checked=True) for b in candidates],
+    ).ask()
 
-    if not prompt_yn(f"Force-delete {len(candidates)} branch(es)?"):
-        print("Aborted.")
+    if not to_delete:
+        click.echo("No branches selected.")
+        return 0
+
+    if not questionary.confirm(f"Force-delete {len(to_delete)} branch(es)?", default=False).ask():
+        click.echo("Aborted.")
         return 0
 
     failed = []
-    for branch in candidates:
-        r = _git("branch", "-D", branch, capture=True)
+    for branch in to_delete:
+        r = _git("branch", "-D", branch)
         if r.returncode == 0:
-            print(f"  Deleted {branch}")
+            click.secho(f"  Deleted {branch}", fg="green")
         else:
-            print(
-                f"  Failed: {branch} -- {r.stderr.strip()}", file=sys.stderr)
+            click.echo(click.style(f"  Failed: {branch} -- {r.stderr.strip()}", fg="red"), err=True)
             failed.append(branch)
 
     if failed:
-        print(
-            f"\n{len(failed)} branch(es) could not be deleted.",
-            file=sys.stderr,
-        )
-        return 1
+        raise click.ClickException(f"{len(failed)} branch(es) could not be deleted.")
 
-    print(
-        f"\n  Cleaned {len(candidates)} branch(es). Kept: {', '.join(sorted(SAFE_BRANCHES))}")
+    click.secho(f"\n  Cleaned {len(to_delete)} branch(es). Kept: {', '.join(sorted(SAFE_BRANCHES))}", fg="green")
     return 0
+
+
+# -- CLI -----------------------------------------------------------------------
+
+@click.group(invoke_without_command=True)
+@click.version_option(VERSION, prog_name="octl")
+@click.pass_context
+def cli(ctx: click.Context) -> None:
+    """octl - Octify dev workflow CLI"""
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def syncenv(ctx: click.Context) -> None:
+    """Sync environment secrets with Infisical."""
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+
+@syncenv.command("pull")
+@click.argument("environment", default="all", type=click.Choice(["dev", "prod", "all"]))
+def syncenv_pull(environment: str) -> None:
+    """Pull secrets from Infisical -> .env files."""
+    check_infisical()
+    cwd = Path.cwd()
+    envs = ["dev", "prod"] if environment == "all" else [environment]
+    rc = max(pull(env, cwd) for env in envs)
+    sys.exit(rc)
+
+
+@syncenv.command("push")
+@click.argument("environment", default="all", type=click.Choice(["dev", "prod", "all"]))
+def syncenv_push(environment: str) -> None:
+    """Push .env files -> Infisical (with deletion diff)."""
+    check_infisical()
+    cwd = Path.cwd()
+    envs = ["dev", "prod"] if environment == "all" else [environment]
+    rc = max(push(env, cwd) for env in envs)
+    sys.exit(rc)
+
+
+@cli.command("clean-branches")
+def clean_branches() -> None:
+    """Delete all local branches except main & production."""
+    sys.exit(_clean_branches())
 
 
 # -- Entry points --------------------------------------------------------------
 
-def _setup_signal() -> None:
-    signal.signal(
-        signal.SIGINT,
-        lambda *_: (print("\nInterrupted (Ctrl+C).",
-                    file=sys.stderr), sys.exit(130)),
-    )
-
-
-def syncenv_usage() -> None:
-    print(
-        "Usage:\n"
-        "  syncenv pull [dev|prod|all]   Pull secrets from Infisical -> .env files\n"
-        "  syncenv push [dev|prod|all]   Push .env files -> Infisical (with deletion diff)\n"
-        "\n"
-        "Environments:\n"
-        "  dev       .env.development\n"
-        "  prod      .env.production\n"
-        "  all       Both (default)\n",
-    )
-
-
-def usage() -> None:
-    print(
-        "octl - Octify dev workflow CLI\n"
-        "\n"
-        "Usage:\n"
-        "  octl syncenv pull [dev|prod|all]   Pull secrets from Infisical -> .env files\n"
-        "  octl syncenv push [dev|prod|all]   Push .env files -> Infisical (with deletion diff)\n"
-        "  octl clean-branches                Delete all local branches except main & production\n"
-        "\n"
-        "Options:\n"
-        "  --help, -h      Show this help message\n"
-        "  --version, -v   Show version\n"
-        "\n"
-        "Prerequisites:\n"
-        "  - Infisical CLI (https://infisical.com/docs/cli/overview)\n"
-        "  - Run `infisical login` and `infisical init` in your project first\n",
-    )
-
-
 def main() -> None:
-    """Entry point for `octl` command."""
-    _setup_signal()
-
-    args = sys.argv[1:]
-
-    if not args or args[0] in ("--help", "-h", "help"):
-        usage()
-        sys.exit(0 if args else 1)
-
-    if args[0] in ("--version", "-v"):
-        print(f"octl {VERSION}")
-        sys.exit(0)
-
-    command = args[0]
-
-    if command == "syncenv":
-        _run_syncenv(args[1:])
-
-    elif command == "clean-branches":
-        sys.exit(clean_branches())
-
-    else:
-        print(f"Error: Unknown command '{command}'", file=sys.stderr)
-        usage()
-        sys.exit(1)
+    cli()
 
 
 def syncenv_cmd() -> None:
-    """Entry point for standalone `syncenv` command."""
-    _setup_signal()
-
-    args = sys.argv[1:]
-
-    if not args and len(sys.argv) > 0:
-        # Check if invoked as `syncenv` with no args
-        pass
-
-    _run_syncenv(args)
+    syncenv(standalone_mode=True)
 
 
 def clean_branches_cmd() -> None:
-    """Entry point for standalone `clean-branches` command."""
-    _setup_signal()
-    sys.exit(clean_branches())
+    sys.exit(_clean_branches())
 
 
 if __name__ == "__main__":
