@@ -220,8 +220,8 @@ def _clean_branches() -> int:
 
 # -- CLI -----------------------------------------------------------------------
 
-@click.group(invoke_without_command=True)
-@click.version_option(VERSION, prog_name="octl")
+@click.group(invoke_without_command=True, context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(VERSION, "-v", "--version", prog_name="octl")
 @click.pass_context
 def cli(ctx: click.Context) -> None:
     """octl - Octify dev workflow CLI"""
