@@ -111,7 +111,7 @@ def _handle_deletions(env: str, env_f: Path) -> int:
         click.echo(f"\nKeys in Infisical [{env}] missing from {env_f.name}:")
         to_delete = questionary.checkbox(
             f"Select keys to delete from [{env}]:",
-            choices=[questionary.Choice(k, checked=True) for k in removed],
+            choices=[questionary.Choice(k, checked=False) for k in removed],
         ).ask()
 
         if to_delete is None or not to_delete:
